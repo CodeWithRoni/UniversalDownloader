@@ -236,7 +236,8 @@ jobs:
           mkdir -p $APPLE/Externals/arm64/release
           cp src-tauri/target/aarch64-apple-ios/release/libuniversal_downloader_lib.a $APPLE/Externals/arm64/release/libapp.a
           PBX=$(ls $APPLE/*.xcodeproj/project.pbxproj)
-          perl -0pi -e 's/shellScript = "[^"]*tauri ios xcode-script[^"]*";/shellScript = "echo Using prebuilt Rust library";/g' "$PBX"
+          grep -n "xcode-script" "$PBX" | cut -c1-300 || true
+          perl -0pi -e 's/shellScript = "(?:[^"\\]|\\.)*?tauri ios xcode-script(?:[^"\\]|\\.)*";/shellScript = "echo Using prebuilt Rust library";/g' "$PBX"
           grep -c "Using prebuilt Rust library" "$PBX"
           grep -m3 "LIBRARY_SEARCH_PATHS" "$PBX" || true
 
