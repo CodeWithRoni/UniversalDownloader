@@ -176,6 +176,30 @@ export const api = {
     const { revealItemInDir } = await import('@tauri-apps/plugin-opener')
     await revealItemInDir(path)
   },
+  async openFolder(dir) {
+    if (!isTauri || !dir) return
+    const { openPath } = await import('@tauri-apps/plugin-opener')
+    await openPath(dir)
+  },
+  /// Open a downloaded file; if it is missing, open its folder instead.
+  /// Returns false when the file itself could not be found.
+  async openOrFolder(path, dir) {
+    if (path && (await api.pathExists(path))) {
+      await api.openFile(path)
+      return true
+    }
+    if (dir) await api.openFolder(dir)
+    return false
+  },
+  /// Highlight the file in the file manager; if it is missing, open its folder.
+  async revealOrFolder(path, dir) {
+    if (path && (await api.pathExists(path))) {
+      await api.showInFolder(path)
+      return true
+    }
+    if (dir) await api.openFolder(dir)
+    return false
+  },
   async openUrl(url) {
     if (!isTauri) {
       window.open(url, '_blank', 'noopener')

@@ -15,7 +15,14 @@ function statusText(t, j) {
 }
 
 function JobRow({ j, index, count }) {
-  const { t, pause, resume, cancel, remove, retry, move, isMobile } = useApp()
+  const { t, pause, resume, cancel, remove, retry, move, isMobile, toast } = useApp()
+  const dir = j.params?.outDir
+  const open = async () => {
+    if (!(await api.openOrFolder(j.filePath, dir))) toast(t('file_missing_folder'), 'error')
+  }
+  const reveal = async () => {
+    if (!(await api.revealOrFolder(j.filePath, dir))) toast(t('file_missing_folder'), 'error')
+  }
   const active = ACTIVE.has(j.status)
   const tone = { done: 'success', error: 'danger', paused: 'warn', cancelled: 'neutral' }[j.status] || 'accent'
   const StatusIcon = { done: CheckCircle2, error: AlertCircle, paused: Pause, queued: Clock }[j.status] || Download
@@ -53,8 +60,8 @@ function JobRow({ j, index, count }) {
               )}
               {j.status === 'paused' && <IconButton icon={Play} title={t('resume')} onClick={() => resume(j.id)} />}
               {j.status === 'error' && <IconButton icon={RotateCw} title={t('retry')} onClick={() => retry(j.id)} />}
-              {j.status === 'done' && j.filePath && !isMobile && (
-                <IconButton icon={FolderOpen} title={t('show_in_folder')} onClick={() => api.showInFolder(j.filePath)} />
+              {j.status === 'done' && (j.filePath || dir) && !isMobile && (
+                <IconButton icon={FolderOpen} title={t('show_in_folder')} onClick={reveal} />
               )}
               {active || j.status === 'queued' || j.status === 'paused' ? (
                 <IconButton icon={X} title={t('cancel')} variant="danger" onClick={() => cancel(j.id)} />
@@ -80,8 +87,8 @@ function JobRow({ j, index, count }) {
           {j.status === 'done' && (
             <div className="flex items-center gap-3 mt-2.5">
               {j.sizeBytes ? <span className="text-xs text-muted">{fmtBytes(j.sizeBytes)}</span> : null}
-              {j.filePath && (
-                <Button size="sm" variant="secondary" icon={Play} onClick={() => api.openFile(j.filePath)}>
+              {(j.filePath || dir) && (
+                <Button size="sm" variant="secondary" icon={Play} onClick={open}>
                   {t('open')}
                 </Button>
               )}

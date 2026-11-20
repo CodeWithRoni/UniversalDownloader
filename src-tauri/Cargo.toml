@@ -1,6 +1,6 @@
 [package]
 name = "universal-downloader"
-version = "2.0.0"
+version = "2.0.1"
 description = "Universal Downloader — fast video & audio downloader"
 authors = ["Md. Amzad Hossain Roni"]
 license = "MIT"

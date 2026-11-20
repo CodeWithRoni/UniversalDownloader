@@ -103,6 +103,7 @@ const en = {
   clear_history: 'Clear library',
   confirm_clear: 'Remove all items from the library? Files on disk are not deleted.',
   file_missing: 'File was moved or deleted',
+  file_missing_folder: 'File not found — opened the download folder instead',
 
   settings_title: 'Settings',
   s_general: 'General',
@@ -257,6 +258,7 @@ const bn = {
   clear_history: 'লাইব্রেরি খালি করো',
   confirm_clear: 'লাইব্রেরির সব আইটেম সরাবে? ডিস্কের ফাইল মুছবে না।',
   file_missing: 'ফাইল সরানো বা মুছে ফেলা হয়েছে',
+  file_missing_folder: 'ফাইল পাওয়া যায়নি — তার বদলে ডাউনলোড ফোল্ডার খোলা হলো',
 
   settings_title: 'সেটিংস',
   s_general: 'সাধারণ',

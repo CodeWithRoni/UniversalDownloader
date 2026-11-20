@@ -441,6 +441,9 @@ pub fn build_args(p: &DownloadParams, ffmpeg: Option<&Path>, archive: Option<&Pa
         _ => "%(title)s.%(ext)s".to_string(),
     };
     let mut a: Vec<String> = vec![
+        // UTF-8 output so non-Latin titles (Bangla, Hindi…) survive on Windows.
+        "--encoding".into(),
+        "utf-8".into(),
         "--newline".into(),
         "--no-warnings".into(),
         "--no-playlist".into(),
@@ -574,6 +577,20 @@ pub async fn start_download(
     std::fs::create_dir_all(&p.out_dir).map_err(|e| format!("Cannot use the download folder: {e}"))?;
 
     let mut args = build_args(&p, ffmpeg.as_deref(), archive.as_deref());
+    // yt-dlp writes the final file path(s) here as UTF-8. This is the reliable
+    // source for "Open" / "Show in folder": console output can lose non-Latin
+    // characters on Windows.
+    let path_file = app.path().app_data_dir().ok().map(|d| d.join("tmp")).and_then(|d| {
+        std::fs::create_dir_all(&d).ok()?;
+        let f = d.join(format!("{}.paths", p.id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "_")));
+        let _ = std::fs::remove_file(&f);
+        Some(f)
+    });
+    if let Some(f) = &path_file {
+        // '%' would be read as an output-template field.
+        let fs = f.to_string_lossy().replace('%', "%%");
+        args.extend(["--no-simulate".into(), "--print-to-file".into(), "after_move:filepath".into(), fs]);
+    }
     // "--" so a link can never be read as an option.
     args.push("--".into());
     args.push(p.url.clone());
@@ -691,7 +708,9 @@ pub async fn start_download(
             pr.status = "done".into();
             pr.percent = 100.0;
             pr.skipped = skipped;
-            if let Some(path) = final_path.or(last_dest) {
+            let printed = path_file.as_ref().and_then(|f| read_printed_path(f));
+            let path = printed.or_else(|| final_path.or(last_dest).filter(|x| Path::new(x).exists()));
+            if let Some(path) = path {
                 pr.size_bytes = std::fs::metadata(&path).ok().map(|m| m.len());
                 pr.file_path = Some(path);
             }
@@ -700,9 +719,24 @@ pub async fn start_download(
             let e = last_error.lock().unwrap().clone();
             pr.error = Some(if e.is_empty() { "Download failed".into() } else { e });
         }
+        if let Some(f) = &path_file {
+            let _ = std::fs::remove_file(f);
+        }
         emit(pr);
     });
     Ok(())
+}
+
+/// Last existing path yt-dlp printed with `--print-to-file after_move:filepath`.
+fn read_printed_path(file: &Path) -> Option<String> {
+    let text = std::fs::read(file).ok()?;
+    let text = String::from_utf8_lossy(&text);
+    text.lines()
+        .map(|l| l.trim().trim_start_matches('\u{feff}'))
+        .filter(|l| !l.is_empty())
+        .filter(|l| Path::new(l).exists())
+        .last()
+        .map(String::from)
 }
 
 // ---------------------------------------------------------------------------

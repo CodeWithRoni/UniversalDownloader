@@ -16,11 +16,11 @@ export default function History() {
   const videos = history.filter((h) => h.mode !== 'audio').length
 
   async function open(h) {
-    if (h.filePath && !(await api.pathExists(h.filePath))) {
-      toast(t('file_missing'), 'error')
-      return
-    }
-    api.openFile(h.filePath)
+    if (!(await api.openOrFolder(h.filePath, h.params?.outDir))) toast(t('file_missing_folder'), 'error')
+  }
+
+  async function reveal(h) {
+    if (!(await api.revealOrFolder(h.filePath, h.params?.outDir))) toast(t('file_missing_folder'), 'error')
   }
 
   function again(h) {
@@ -106,9 +106,9 @@ export default function History() {
                   </div>
                 </div>
                 <div className="flex items-center shrink-0">
-                  {h.filePath && <IconButton icon={Play} title={t('open')} onClick={() => open(h)} />}
-                  {h.filePath && !isMobile && (
-                    <IconButton icon={FolderOpen} title={t('show_in_folder')} onClick={() => api.showInFolder(h.filePath)} />
+                  {(h.filePath || h.params?.outDir) && <IconButton icon={Play} title={t('open')} onClick={() => open(h)} />}
+                  {(h.filePath || h.params?.outDir) && !isMobile && (
+                    <IconButton icon={FolderOpen} title={t('show_in_folder')} onClick={() => reveal(h)} />
                   )}
                   <IconButton icon={RotateCw} title={t('redownload')} onClick={() => again(h)} />
                   <IconButton icon={Trash2} title={t('remove')} onClick={() => removeHistory(h.id)} />
