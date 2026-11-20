@@ -105,6 +105,17 @@ fn cancel_download(state: State<'_, AppState>, id: String) {
     stop(&state, &id, "cancelled");
 }
 
+/// Delete the `.part` pieces of a paused download the user cancelled.
+#[tauri::command]
+fn discard_partials(paths: Vec<String>) {
+    for d in &paths {
+        let _ = std::fs::remove_file(format!("{d}.part"));
+        let _ = std::fs::remove_file(format!("{d}.ytdl"));
+    }
+    #[cfg(desktop)]
+    ytdlp::remove_partials(&paths);
+}
+
 #[tauri::command]
 fn default_download_dir(app: AppHandle) -> String {
     #[cfg(target_os = "android")]
@@ -155,6 +166,7 @@ pub fn run() {
             start_download,
             pause_download,
             cancel_download,
+            discard_partials,
             default_download_dir,
             load_json,
             save_json,

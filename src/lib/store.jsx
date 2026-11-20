@@ -151,6 +151,8 @@ export function AppProvider({ children }) {
         if (ev.skipped) patch.skipped = true
         if (ev.filePath) patch.filePath = ev.filePath
         if (ev.sizeBytes) patch.sizeBytes = ev.sizeBytes
+        if (ev.status === 'paused') patch.partials = ev.partials || job.partials || []
+        if (ev.status === 'cancelled' || ev.status === 'done') patch.partials = []
         if (ev.status === 'done') {
           patch.finishedAt = Date.now()
           if (!ev.skipped) {
@@ -288,7 +290,11 @@ export function AppProvider({ children }) {
       const j = jobsRef.current.find((x) => x.id === id)
       if (!j) return
       if (ACTIVE.has(j.status)) api.cancelDownload(id)
-      else patchJob(id, { status: 'cancelled' })
+      else {
+        // Paused (or waiting): nothing is running, so remove leftover pieces here.
+        if (j.partials?.length) api.discardPartials(j.partials).catch(() => {})
+        patchJob(id, { status: 'cancelled', partials: [] })
+      }
     },
     [patchJob],
   )

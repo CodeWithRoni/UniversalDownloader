@@ -1,7 +1,7 @@
 {
   "name": "universal-downloader",
   "private": true,
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Universal Downloader — video & audio downloader (Rust + Tauri 2)",
   "author": "Md. Amzad Hossain Roni",
   "type": "module",

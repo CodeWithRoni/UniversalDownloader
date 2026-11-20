@@ -156,6 +156,9 @@ pub struct Progress {
     pub size_bytes: Option<u64>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub skipped: bool,
+    /// Unfinished files of a paused download (for cleanup on cancel).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub partials: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

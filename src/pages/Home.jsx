@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import {
-  AlertTriangle, ArrowRight, CalendarClock, Captions, Check, ChevronDown, Clipboard, Film, FolderOpen, Link2,
+  AlertTriangle, ArrowRight, CalendarClock, Captions, Check, ChevronDown, Clipboard, ExternalLink, Film, FolderOpen, Link2,
   ListVideo, Music2, Play, Radio, Search, SlidersHorizontal, Sparkles, X,
 } from 'lucide-react'
 import { api } from '../lib/api'
@@ -390,7 +390,8 @@ function VideoPanel({ info, onDone }) {
             {preview && ytId ? (
               <iframe
                 className="absolute inset-0 size-full"
-                src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1`}
+                src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&rel=0&playsinline=1`}
+                referrerPolicy="strict-origin-when-cross-origin"
                 allow="autoplay; encrypted-media; picture-in-picture"
                 allowFullScreen
                 title="preview"
@@ -416,6 +417,14 @@ function VideoPanel({ info, onDone }) {
               </>
             )}
           </Thumb>
+          {preview && ytId && (
+            <button
+              className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted hover:text-accent"
+              onClick={() => api.openUrl(`https://www.youtube.com/watch?v=${ytId}`).catch(() => {})}
+            >
+              <ExternalLink className="size-3.5" /> {t('preview_external')}
+            </button>
+          )}
           <h2 className="font-semibold text-[15px] leading-snug mt-4 line-clamp-3">{info.title}</h2>
           <div className="text-sm text-muted mt-1 truncate">{info.uploader}</div>
           <div className="flex flex-wrap gap-1.5 mt-3">

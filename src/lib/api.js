@@ -133,6 +133,7 @@ export const api = {
   startDownload: (params) => (isTauri ? call('start_download', { params }) : demo.startDownload(params)),
   pauseDownload: (id) => (isTauri ? call('pause_download', { id }) : demo.stop(id, 'paused')),
   cancelDownload: (id) => (isTauri ? call('cancel_download', { id }) : demo.stop(id, 'cancelled')),
+  discardPartials: (paths) => (isTauri && paths?.length ? call('discard_partials', { paths }) : Promise.resolve()),
   defaultDownloadDir: () => (isTauri ? call('default_download_dir') : Promise.resolve('~/Downloads/Universal Downloader')),
   loadJson: (name) => {
     if (isTauri) return call('load_json', { name })

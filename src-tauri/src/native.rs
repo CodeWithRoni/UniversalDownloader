@@ -253,6 +253,7 @@ pub async fn start_download(
                     let _ = std::fs::remove_file(&part_path);
                 } else {
                     pr.percent = pct;
+                    pr.partials = vec![final_path.to_string_lossy().into_owned()];
                 }
             }
             (None, Ok(_)) => match std::fs::rename(&part_path, &final_path) {

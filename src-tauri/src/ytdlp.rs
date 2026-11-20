@@ -131,7 +131,7 @@ async fn run_json_once(bin: &Path, args: &[String]) -> Result<Value, String> {
         let err = String::from_utf8_lossy(&out.stderr);
         let tail: Vec<&str> = err.trim().lines().rev().take(3).collect();
         let tail: Vec<&str> = tail.into_iter().rev().collect();
-        return Err(format!("yt-dlp: {}", tail.join(" ")));
+        return Err(friendly_error(&tail.join(" ")));
     }
     serde_json::from_slice(&out.stdout).map_err(|e| format!("Could not read video info: {e}"))
 }
@@ -652,6 +652,7 @@ pub async fn start_download(
         let mut all_dests: Vec<String> = Vec::new();
         let mut final_path: Option<String> = None;
         let mut last_pct = 0.0;
+        let mut overall = OverallProgress::default();
         let mut skipped = false;
         let mut stopped = false;
 
@@ -680,7 +681,11 @@ pub async fn start_download(
                             } else if line.contains("has already been recorded in the archive") {
                                 skipped = true;
                             }
+                            if let Some(n) = parse_stream_count(&line) {
+                                overall.streams = n;
+                            }
                             if let Some((pct, speed, eta, downloaded, total)) = parse_progress(&line) {
+                                let (pct, downloaded, total) = overall.update(pct, downloaded, total);
                                 last_pct = pct;
                                 emit(Progress { id: id.clone(), status: "downloading".into(), percent: pct, speed, eta, downloaded, total, ..Default::default() });
                             } else if line.starts_with("[Merger]") || line.starts_with("[ExtractAudio]")
@@ -719,6 +724,10 @@ pub async fn start_download(
             pr.percent = if reason == "paused" { last_pct } else { 0.0 };
             if reason == "cancelled" {
                 remove_partials(&all_dests);
+            } else {
+                // Remember the unfinished pieces, so cancelling the paused
+                // download later can still clean them up.
+                pr.partials = all_dests.clone();
             }
         } else if code == Some(0) {
             pr.status = "done".into();
@@ -733,7 +742,7 @@ pub async fn start_download(
         } else {
             pr.status = "error".into();
             let e = last_error.lock().unwrap().clone();
-            pr.error = Some(if e.is_empty() { "Download failed".into() } else { e });
+            pr.error = Some(if e.is_empty() { "Download failed".into() } else { friendly_error(&e) });
         }
         if let Some(f) = &path_file {
             let _ = std::fs::remove_file(f);
@@ -743,9 +752,81 @@ pub async fn start_download(
     Ok(())
 }
 
+/// Turn common yt-dlp errors into advice the user can act on.
+pub fn friendly_error(raw: &str) -> String {
+    let msg = raw.trim().trim_start_matches("ERROR:").trim();
+    let low = msg.to_lowercase();
+    let hint = if low.contains("cookie") && (low.contains("could not copy") || low.contains("permission denied") || low.contains("locked") || low.contains("failed to decrypt")) {
+        Some("Could not read the browser's cookies. Close that browser completely and try again, or pick Firefox / \"None\" in Settings → Cookies.")
+    } else if low.contains("sign in to confirm") || low.contains("not a bot") {
+        Some("YouTube asked to confirm you're not a bot. Try again later, from another network, or turn on Settings → Cookies.")
+    } else if low.contains("private video") || low.contains("members-only") || low.contains("age") && low.contains("confirm") {
+        Some("This video needs a signed-in account. Turn on Settings → Cookies with a browser where you're logged in.")
+    } else if low.contains("unsupported url") {
+        Some("This site or link is not supported.")
+    } else if low.contains("ffmpeg") && (low.contains("not found") || low.contains("not installed")) {
+        Some("ffmpeg is missing, so HD video and MP3 can't be made. Reinstall the app.")
+    } else {
+        None
+    };
+    match hint {
+        Some(h) => format!("{h}\n({msg})"),
+        None => msg.to_string(),
+    }
+}
+
+/// `[info] xyz: Downloading 1 format(s): 137+140` → 2 streams.
+fn parse_stream_count(line: &str) -> Option<usize> {
+    if !line.starts_with("[info]") {
+        return None;
+    }
+    let ids = line.split("format(s):").nth(1)?.trim();
+    Some(ids.split('+').filter(|x| !x.trim().is_empty()).count().max(1))
+}
+
+/// Combines the separate video and audio downloads of a merged format into
+/// one progress that only moves forward (0 → 100) instead of restarting.
+#[derive(Default)]
+struct OverallProgress {
+    streams: usize,
+    stage: usize,
+    completed: u64,
+    last_downloaded: u64,
+    last_total: u64,
+    shown: f64,
+}
+
+impl OverallProgress {
+    fn update(&mut self, pct: f64, downloaded: Option<u64>, total: Option<u64>) -> (f64, Option<u64>, Option<u64>) {
+        let streams = self.streams.max(1);
+        let (Some(d), Some(t)) = (downloaded, total.filter(|t| *t > 0)) else {
+            // Sizes unknown: fall back to the per-stream percentage, split evenly.
+            let p = ((self.stage.min(streams - 1)) as f64 * 100.0 + pct) / streams as f64;
+            self.shown = self.shown.max(p.min(100.0));
+            return (self.shown, downloaded, total);
+        };
+        let prev_finished = self.last_total > 0 && self.last_downloaded >= self.last_total;
+        if d + 1024 < self.last_downloaded || (prev_finished && t != self.last_total) {
+            // A new stream started (audio after video).
+            self.completed += self.last_total;
+            self.stage += 1;
+        }
+        self.last_downloaded = d;
+        self.last_total = t;
+        // Streams still to come: assume ~12% of this one (an audio track).
+        let remaining = streams.saturating_sub(self.stage + 1) as f64;
+        let est = (t as f64 * 0.12 * remaining) as u64;
+        let all_done = self.completed + d;
+        let all_total = self.completed + t + est;
+        let p = (all_done as f64 * 100.0 / all_total as f64).min(100.0);
+        self.shown = self.shown.max(p);
+        (self.shown, Some(all_done), Some(all_total.max(all_done)))
+    }
+}
+
 /// Delete the unfinished pieces a cancelled download leaves behind
 /// (`.part`, `.ytdl`, `.part-FragN`), never a finished file.
-fn remove_partials(dests: &[String]) {
+pub fn remove_partials(dests: &[String]) {
     for d in dests {
         let path = Path::new(d);
         let _ = std::fs::remove_file(format!("{d}.part"));
@@ -835,6 +916,31 @@ mod tests {
         assert_eq!(eta, "00:10");
         assert_eq!(d, Some(1000));
         assert_eq!(t, Some(5000));
+    }
+
+    #[test]
+    fn overall_progress_never_goes_back() {
+        let mut o = OverallProgress { streams: 2, ..Default::default() };
+        let (a, _, _) = o.update(50.0, Some(500), Some(1000));
+        let (b, _, _) = o.update(100.0, Some(1000), Some(1000));
+        let (c, _, _) = o.update(1.0, Some(10), Some(100)); // second stream starts
+        let (c2, _, _) = o.update(60.0, Some(60), Some(100));
+        let (d, _, _) = o.update(100.0, Some(100), Some(100));
+        assert!(c <= c2 && c2 <= d);
+        // A second stream larger than the first is still detected.
+        let mut o2 = OverallProgress { streams: 2, ..Default::default() };
+        o2.update(100.0, Some(1000), Some(1000));
+        let (x, _, _) = o2.update(50.0, Some(5000), Some(10_000));
+        assert!(x < 100.0);
+        assert!(a < b && b <= c && c <= d && d == 100.0);
+        assert_eq!(parse_stream_count("[info] x: Downloading 1 format(s): 137+140"), Some(2));
+        assert_eq!(parse_stream_count("[info] x: Downloading 1 format(s): 18"), Some(1));
+    }
+
+    #[test]
+    fn friendly() {
+        assert!(friendly_error("ERROR: Could not copy Chrome cookie database").starts_with("Could not read the browser"));
+        assert_eq!(friendly_error("ERROR: boom"), "boom");
     }
 
     #[test]
