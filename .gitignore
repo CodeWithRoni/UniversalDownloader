@@ -1,11 +1,12 @@
 node_modules
 dist
-release
 resources/bin/*
 !resources/bin/.gitkeep
-build/icon.png
-build/icon.ico
-build/icon.icns
 .DS_Store
-android/
-ios/
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen/schemas
+# Generated mobile projects (created by `tauri android init` / `tauri ios init`)
+src-tauri/gen/android
+src-tauri/gen/apple

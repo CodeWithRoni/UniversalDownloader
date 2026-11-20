@@ -1,5 +1,8 @@
 name: Release — Universal Downloader
 
+# Push a tag like v2.0.0 → builds every platform and creates a draft release.
+# "Run workflow" (workflow_dispatch) → builds everything; files land in the run's Artifacts.
+
 on:
   push:
     tags: ["v*"]
@@ -8,161 +11,236 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  # ---------------------------------------------------------------- desktop
+  desktop:
+    name: Desktop (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
-            fetch: windows
-            builder: --win
-          - platform: macos-latest
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: macOS Apple Silicon
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
             fetch: mac arm64
-            builder: --mac --arm64
-          - platform: macos-latest
+          - name: macOS Intel
+            os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: dmg
             fetch: mac x64
-            builder: --mac --x64
-          - platform: ubuntu-latest
+          - name: Linux x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
             fetch: linux x64
-            builder: --linux
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Install npm packages
         run: npm ci
 
-      - name: Fetch yt-dlp + ffmpeg (Windows)
-        if: matrix.platform == 'windows-latest'
+      - name: Bundle yt-dlp + ffmpeg (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/fetch-binaries.ps1
 
-      - name: Fetch yt-dlp + ffmpeg (macOS / Linux)
-        if: matrix.platform != 'windows-latest'
-        shell: bash
+      - name: Bundle yt-dlp + ffmpeg (macOS / Linux)
+        if: runner.os != 'Windows'
         run: |
           chmod +x scripts/fetch-binaries.sh
           ./scripts/fetch-binaries.sh ${{ matrix.fetch }}
-          ls -la resources/bin
 
-      - name: Build the UI
-        run: npm run build
+      - name: Build installer
+        run: npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
-      - name: Generate app icons from SVG source
-        run: npm run icons
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p out
+          B=src-tauri/target/${{ matrix.target }}/release/bundle
+          case "${{ matrix.target }}" in
+            x86_64-pc-windows-msvc) cp $B/nsis/*.exe "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_windows-x64-setup.exe" ;;
+            aarch64-apple-darwin)   cp $B/dmg/*.dmg "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_macos-apple-silicon.dmg" ;;
+            x86_64-apple-darwin)    cp $B/dmg/*.dmg "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_macos-intel.dmg" ;;
+            *) cp $B/deb/*.deb "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_linux-amd64.deb"
+               cp $B/appimage/*.AppImage "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_linux-x86_64.AppImage" ;;
+          esac
+          ls -la out
 
-      - name: Build installers (Electron)
-        run: npx electron-builder ${{ matrix.builder }} --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload installers as artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: installers-${{ strategy.job-index }}
-          path: |
-            release/*.exe
-            release/*.yml
-            release/*.dmg
-            release/*.AppImage
-            release/*.deb
-          if-no-files-found: ignore
+          name: installers-${{ matrix.target }}
+          path: out/*
 
+  # ---------------------------------------------------------------- android
   android:
+    name: Android APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - name: Setup Java (for Gradle)
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 17
 
-      - name: Install dependencies
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" "build-tools;34.0.0" "platforms;android-34"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: android
+
+      - name: Install npm packages
         run: npm ci
 
-      - name: Build the UI
-        run: npm run build
+      - name: Generate the Android project
+        run: npx tauri android init --ci
 
-      - name: Generate Android project and sync the web app into it
+      - name: Build APK
+        run: npx tauri android build --apk --ci
+
+      - name: Sign APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          npx cap add android
-          npx cap sync android
+          BT=$ANDROID_HOME/build-tools/34.0.0
+          APK=$(find src-tauri/gen/android/app/build/outputs/apk -name '*release*.apk' | head -1)
+          echo "Unsigned APK: $APK"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > release.jks
+            PASS="$KEYSTORE_PASSWORD"; ALIAS="$KEY_ALIAS"
+          else
+            echo "::warning::ANDROID_KEYSTORE_BASE64 secret not set — signing with a temporary key. Add your own key so users can update without reinstalling."
+            PASS=temporary-pass; ALIAS=ud
+            keytool -genkeypair -v -keystore release.jks -alias $ALIAS -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass $PASS -keypass $PASS -dname "CN=Universal Downloader, O=CodeWithRoni, C=BD"
+          fi
+          $BT/zipalign -f -p 4 "$APK" aligned.apk
+          mkdir -p out
+          $BT/apksigner sign --ks release.jks --ks-key-alias "$ALIAS" --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
+            --out "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_android.apk" aligned.apk
+          $BT/apksigner verify out/*.apk
+          rm -f release.jks
+          ls -la out
 
-      - name: Build release APK (unsigned)
-        working-directory: android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
-
-      - name: Collect the APK
-        run: cp android/app/build/outputs/apk/release/app-release-unsigned.apk Universal-Downloader.apk
-
-      - name: Upload APK as artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: installers-android
-          path: Universal-Downloader.apk
+          path: out/*
 
+  # ---------------------------------------------------------------- iOS
   ios:
+    name: iOS IPA (unsigned)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios
+
+      - name: Install npm packages
         run: npm ci
 
       - name: Build the UI
         run: npm run build
 
-      - name: Generate iOS project and sync the web app into it
-        run: |
-          npx cap add ios
-          npx cap sync ios
+      - name: Generate the Xcode project
+        run: npx tauri ios init --ci
 
-      - name: Build the app (unsigned, for sideloading)
+      - name: Show downloads in the Files app
         run: |
-          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release -sdk iphoneos -derivedDataPath ios-build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          PLIST=$(find src-tauri/gen/apple -name Info.plist -path '*_iOS*' | head -1)
+          echo "Info.plist: $PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" || true
 
-      - name: Package unsigned IPA
+      - name: Build app (no code signing)
         run: |
-          mkdir -p Payload
-          cp -R ios-build/Build/Products/Release-iphoneos/App.app Payload/
-          zip -r Universal-Downloader-unsigned.ipa Payload
+          PROJ=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -1)
+          SCHEME="$(basename "$PROJ" .xcodeproj)_iOS"
+          echo "Project: $PROJ  Scheme: $SCHEME"
+          xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath ios-build ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
 
-      - name: Upload IPA as artifact
-        uses: actions/upload-artifact@v4
+      - name: Package IPA
+        run: |
+          APP=$(find ios-build/Build/Products -name '*.app' -type d | head -1)
+          echo "App: $APP"
+          mkdir -p Payload out
+          cp -R "$APP" Payload/
+          zip -qr "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_ios-unsigned.ipa" Payload
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
         with:
           name: installers-ios
-          path: Universal-Downloader-unsigned.ipa
+          path: out/*
 
+  # ---------------------------------------------------------------- release
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, android, ios]
+    needs: [desktop, android, ios]
     runs-on: ubuntu-latest
     steps:
-      - name: Download all installer artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
@@ -172,5 +250,16 @@ jobs:
         with:
           draft: true
           name: "Universal Downloader ${{ github.ref_name }}"
-          body: "Download the installer for your system below. Windows: .exe — macOS: .dmg — Linux: .AppImage / .deb — Android: .apk (unsigned, sideload) — iOS: .ipa (unsigned, needs AltStore/SideStore to install)"
+          body: |
+            ## Downloads
+            | Platform | File |
+            |---|---|
+            | Windows 10/11 | `*_windows-x64-setup.exe` |
+            | macOS (M1/M2/M3/M4) | `*_macos-apple-silicon.dmg` |
+            | macOS (Intel) | `*_macos-intel.dmg` |
+            | Linux (Debian/Ubuntu) | `*_linux-amd64.deb` (or `.AppImage`) |
+            | Android 7+ | `*_android.apk` |
+            | iOS 14+ | `*_ios-unsigned.ipa` (sideload with AltStore / SideStore) |
+
+            Built with Rust + Tauri 2.
           files: artifacts/**
