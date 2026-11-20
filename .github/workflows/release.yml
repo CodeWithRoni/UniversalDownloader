@@ -7,6 +7,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Which builds to run"
+        type: choice
+        default: all
+        options: [all, desktop, android, ios, mobile]
 
 permissions:
   contents: write
@@ -18,6 +24,7 @@ jobs:
   # ---------------------------------------------------------------- desktop
   desktop:
     name: Desktop (${{ matrix.name }})
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'desktop' }}
     strategy:
       fail-fast: false
       matrix:
@@ -104,6 +111,7 @@ jobs:
   # ---------------------------------------------------------------- android
   android:
     name: Android APK
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'android' || inputs.only == 'mobile' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -118,11 +126,12 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
+      # The Android SDK is preinstalled on GitHub's Ubuntu runners.
       - name: Install Android NDK
         run: |
-          sdkmanager --install "ndk;27.2.12479018" "build-tools;34.0.0" "platforms;android-34"
+          SDKM=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+          yes | $SDKM --licenses > /dev/null || true
+          $SDKM --install "ndk;27.2.12479018" "build-tools;34.0.0" "platforms;android-34" > /dev/null
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@stable
@@ -177,6 +186,7 @@ jobs:
   # ---------------------------------------------------------------- iOS
   ios:
     name: iOS IPA (unsigned)
+    if: ${{ !inputs.only || inputs.only == 'all' || inputs.only == 'ios' || inputs.only == 'mobile' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -210,6 +220,25 @@ jobs:
           echo "Info.plist: $PLIST"
           /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$PLIST" || true
           /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$PLIST" || true
+
+      # Tauri's Xcode build phase only works while `tauri ios build` runs (which
+      # needs an Apple signing team), so build the Rust library here and let
+      # Xcode link the prebuilt copy.
+      - name: Build Rust library for iOS
+        working-directory: src-tauri
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+        run: cargo build --release --lib --target aarch64-apple-ios
+
+      - name: Use the prebuilt library in the Xcode project
+        run: |
+          APPLE=src-tauri/gen/apple
+          mkdir -p $APPLE/Externals/arm64/release
+          cp src-tauri/target/aarch64-apple-ios/release/libuniversal_downloader_lib.a $APPLE/Externals/arm64/release/libapp.a
+          PBX=$(ls $APPLE/*.xcodeproj/project.pbxproj)
+          perl -0pi -e 's/shellScript = "[^"]*tauri ios xcode-script[^"]*";/shellScript = "echo Using prebuilt Rust library";/g' "$PBX"
+          grep -c "Using prebuilt Rust library" "$PBX"
+          grep -m3 "LIBRARY_SEARCH_PATHS" "$PBX" || true
 
       - name: Build app (no code signing)
         run: |
