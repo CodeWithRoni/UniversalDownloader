@@ -13,12 +13,17 @@ on:
         type: choice
         default: all
         options: [all, desktop, android, ios, mobile]
+      release_tag:
+        description: "Create a draft release with this tag (e.g. v2.0.0). Leave empty for a test build."
+        type: string
+        default: ""
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  VERSION: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:
   # ---------------------------------------------------------------- desktop
@@ -95,11 +100,11 @@ jobs:
           mkdir -p out
           B=src-tauri/target/${{ matrix.target }}/release/bundle
           case "${{ matrix.target }}" in
-            x86_64-pc-windows-msvc) cp $B/nsis/*.exe "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_windows-x64-setup.exe" ;;
-            aarch64-apple-darwin)   cp $B/dmg/*.dmg "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_macos-apple-silicon.dmg" ;;
-            x86_64-apple-darwin)    cp $B/dmg/*.dmg "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_macos-intel.dmg" ;;
-            *) cp $B/deb/*.deb "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_linux-amd64.deb"
-               cp $B/appimage/*.AppImage "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_linux-x86_64.AppImage" ;;
+            x86_64-pc-windows-msvc) cp $B/nsis/*.exe "out/Universal-Downloader_${VERSION//\//-}_windows-x64-setup.exe" ;;
+            aarch64-apple-darwin)   cp $B/dmg/*.dmg "out/Universal-Downloader_${VERSION//\//-}_macos-apple-silicon.dmg" ;;
+            x86_64-apple-darwin)    cp $B/dmg/*.dmg "out/Universal-Downloader_${VERSION//\//-}_macos-intel.dmg" ;;
+            *) cp $B/deb/*.deb "out/Universal-Downloader_${VERSION//\//-}_linux-amd64.deb"
+               cp $B/appimage/*.AppImage "out/Universal-Downloader_${VERSION//\//-}_linux-x86_64.AppImage" ;;
           esac
           ls -la out
 
@@ -173,7 +178,7 @@ jobs:
           $BT/zipalign -f -p 4 "$APK" aligned.apk
           mkdir -p out
           $BT/apksigner sign --ks release.jks --ks-key-alias "$ALIAS" --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
-            --out "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_android.apk" aligned.apk
+            --out "out/Universal-Downloader_${VERSION//\//-}_android.apk" aligned.apk
           $BT/apksigner verify out/*.apk
           rm -f release.jks
           ls -la out
@@ -256,7 +261,7 @@ jobs:
           echo "App: $APP"
           mkdir -p Payload out
           cp -R "$APP" Payload/
-          zip -qr "out/Universal-Downloader_${GITHUB_REF_NAME//\//-}_ios-unsigned.ipa" Payload
+          zip -qr "out/Universal-Downloader_${VERSION//\//-}_ios-unsigned.ipa" Payload
           ls -la out
 
       - uses: actions/upload-artifact@v4
@@ -266,7 +271,7 @@ jobs:
 
   # ---------------------------------------------------------------- release
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '' }}
     needs: [desktop, android, ios]
     runs-on: ubuntu-latest
     steps:
@@ -279,7 +284,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          name: "Universal Downloader ${{ github.ref_name }}"
+          tag_name: ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: "Universal Downloader ${{ env.VERSION }}"
           body: |
             ## Downloads
             | Platform | File |
