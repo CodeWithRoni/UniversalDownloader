@@ -136,23 +136,26 @@ async fn run_json_once(bin: &Path, args: &[String]) -> Result<Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| format!("Could not read video info: {e}"))
 }
 
+/// Run yt-dlp for metadata. `--` always goes before the link, so pasted text
+/// that starts with "-" can never be read as an option (e.g. `--exec`).
 /// If YouTube blocks the default client ("Sign in to confirm you're not a
 /// bot"), retry once with alternate player clients.
-async fn run_json(bin: &Path, args: Vec<String>) -> Result<Value, String> {
-    match run_json_once(bin, &args).await {
+async fn run_json(bin: &Path, opts: Vec<String>, url: &str) -> Result<Value, String> {
+    let with_url = |mut a: Vec<String>| {
+        a.push("--".into());
+        a.push(url.to_string());
+        a
+    };
+    match run_json_once(bin, &with_url(opts.clone())).await {
         Ok(v) => Ok(v),
         Err(first) => {
-            let mut retry = args.clone();
-            let url = retry.pop();
+            let mut retry = opts;
             retry.extend([
                 "--extractor-args".to_string(),
                 "youtube:player_client=web_safari,ios,android_vr,tv".to_string(),
                 "--ignore-no-formats-error".to_string(),
             ]);
-            if let Some(u) = url {
-                retry.push(u);
-            }
-            run_json_once(bin, &retry).await.map_err(|_| {
+            run_json_once(bin, &with_url(retry)).await.map_err(|_| {
                 format!("{first} — if YouTube keeps blocking, try again later or from another network.")
             })
         }
@@ -374,19 +377,20 @@ pub async fn get_info(app: &AppHandle, url: &str, opts: InfoOptions) -> Result<M
             .collect();
         args.push(limit.to_string());
         args.extend(cookies.clone());
-        args.push(channel_url);
-        let data = run_json(&bin, args).await?;
+        let data = run_json(&bin, args, &channel_url).await?;
         if s(&data, "_type") == "playlist" {
             return Ok(parse_playlist(&data, true));
         }
     }
 
-    if link.contains("list=") || link.contains("/playlist") || link.contains("/sets/") {
+    // A video opened from a YouTube Mix / Radio (list=RD…) is a single video,
+    // not a playlist — those lists are endless auto-generated queues.
+    let is_mix = link.contains("watch?v=") && (link.contains("list=RD") || link.contains("start_radio=1"));
+    if !is_mix && (link.contains("list=") || link.contains("/playlist") || link.contains("/sets/")) {
         let mut args: Vec<String> =
             ["--dump-single-json", "--flat-playlist", "--yes-playlist", "--no-warnings"].iter().map(|x| x.to_string()).collect();
         args.extend(cookies.clone());
-        args.push(link.clone());
-        let data = run_json(&bin, args).await?;
+        let data = run_json(&bin, args, &link).await?;
         if s(&data, "_type") == "playlist" {
             return Ok(parse_playlist(&data, false));
         }
@@ -394,8 +398,7 @@ pub async fn get_info(app: &AppHandle, url: &str, opts: InfoOptions) -> Result<M
 
     let mut args: Vec<String> = ["--dump-single-json", "--no-playlist", "--no-warnings"].iter().map(|x| x.to_string()).collect();
     args.extend(cookies);
-    args.push(link.clone());
-    let data = run_json(&bin, args).await?;
+    let data = run_json(&bin, args, &link).await?;
     if s(&data, "_type") == "playlist" {
         return Ok(parse_playlist(&data, false));
     }
@@ -565,6 +568,7 @@ async fn kill_tree(child: &mut Child) {
 pub async fn start_download(
     app: AppHandle,
     jobs: Arc<Mutex<std::collections::HashMap<String, Arc<JobCtl>>>>,
+    ctl: Arc<JobCtl>,
     p: DownloadParams,
 ) -> Result<(), String> {
     let bin = ytdlp_or_err(&app)?;
@@ -595,6 +599,14 @@ pub async fn start_download(
     args.push("--".into());
     args.push(p.url.clone());
 
+    let id = p.id.clone();
+    if let Some(reason) = ctl.stop_reason() {
+        // Paused/cancelled before yt-dlp even started.
+        jobs.lock().unwrap().remove(&id);
+        let _ = app.emit(PROGRESS_EVENT, Progress { id, status: reason.into(), ..Default::default() });
+        return Ok(());
+    }
+
     let mut child = new_command(&bin)
         .args(&args)
         .stdin(Stdio::null())
@@ -603,15 +615,11 @@ pub async fn start_download(
         .spawn()
         .map_err(|e| format!("Could not start download: {e}"))?;
 
-    let id = p.id.clone();
-    let ctl = Arc::new(JobCtl::default());
-    jobs.lock().unwrap().insert(id.clone(), ctl.clone());
-
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
 
     let last_error = Arc::new(Mutex::new(String::new()));
-    {
+    let stderr_task = {
         let last_error = last_error.clone();
         tauri::async_runtime::spawn(async move {
             let mut r = BufReader::new(stderr);
@@ -626,8 +634,8 @@ pub async fn start_download(
                 }
                 buf.clear();
             }
-        });
-    }
+        })
+    };
 
     tauri::async_runtime::spawn(async move {
         let dest_re = Regex::new(r"^\[download\] Destination: (.+)$").unwrap();
@@ -641,6 +649,7 @@ pub async fn start_download(
         let mut reader = BufReader::new(stdout);
         let mut buf = Vec::new();
         let mut last_dest: Option<String> = None;
+        let mut all_dests: Vec<String> = Vec::new();
         let mut final_path: Option<String> = None;
         let mut last_pct = 0.0;
         let mut skipped = false;
@@ -661,6 +670,7 @@ pub async fn start_download(
                             buf.clear();
                             if let Some(c) = dest_re.captures(&line) {
                                 last_dest = Some(c[1].trim().to_string());
+                                all_dests.push(c[1].trim().to_string());
                             } else if let Some(c) = merge_re.captures(&line) {
                                 final_path = Some(c[1].to_string());
                             } else if let Some(c) = audio_re.captures(&line) {
@@ -699,11 +709,17 @@ pub async fn start_download(
             }
         };
 
+        // Let the stderr reader drain, so the real error message is available.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), stderr_task).await;
+
         jobs.lock().unwrap().remove(&id);
         let mut pr = Progress { id: id.clone(), ..Default::default() };
         if let Some(reason) = ctl.stop_reason() {
             pr.status = reason.into();
             pr.percent = if reason == "paused" { last_pct } else { 0.0 };
+            if reason == "cancelled" {
+                remove_partials(&all_dests);
+            }
         } else if code == Some(0) {
             pr.status = "done".into();
             pr.percent = 100.0;
@@ -725,6 +741,25 @@ pub async fn start_download(
         emit(pr);
     });
     Ok(())
+}
+
+/// Delete the unfinished pieces a cancelled download leaves behind
+/// (`.part`, `.ytdl`, `.part-FragN`), never a finished file.
+fn remove_partials(dests: &[String]) {
+    for d in dests {
+        let path = Path::new(d);
+        let _ = std::fs::remove_file(format!("{d}.part"));
+        let _ = std::fs::remove_file(format!("{d}.ytdl"));
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { continue };
+        let frag = format!("{name}.part-Frag");
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if e.file_name().to_str().is_some_and(|n| n.starts_with(&frag)) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
 }
 
 /// Last existing path yt-dlp printed with `--print-to-file after_move:filepath`.

@@ -74,11 +74,19 @@ async fn search_videos(
 
 #[tauri::command]
 async fn start_download(app: AppHandle, state: State<'_, AppState>, params: DownloadParams) -> Result<(), String> {
+    // Register first: Pause/Cancel pressed while the engine is still
+    // preparing (fetching info, starting yt-dlp) must not get lost.
     let jobs = state.jobs.clone();
+    let ctl = Arc::new(JobCtl::default());
+    jobs.lock().unwrap().insert(params.id.clone(), ctl.clone());
     #[cfg(desktop)]
-    return ytdlp::start_download(app, jobs, params).await;
+    let result = ytdlp::start_download(app, jobs.clone(), ctl, params.clone()).await;
     #[cfg(mobile)]
-    return native::start_download(app, jobs, params).await;
+    let result = native::start_download(app, jobs.clone(), ctl, params.clone()).await;
+    if result.is_err() {
+        jobs.lock().unwrap().remove(&params.id);
+    }
+    result
 }
 
 fn stop(state: &AppState, id: &str, reason: &'static str) {
@@ -137,6 +145,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             engine_status,

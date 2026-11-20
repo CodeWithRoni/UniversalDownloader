@@ -12,6 +12,7 @@
       "allow": [{ "path": "**" }]
     },
     "opener:allow-reveal-item-in-dir",
-    "notification:default"
+    "notification:default",
+    "clipboard-manager:allow-read-text"
   ]
 }

@@ -176,6 +176,17 @@ export const api = {
     const { revealItemInDir } = await import('@tauri-apps/plugin-opener')
     await revealItemInDir(path)
   },
+  /// Read text from the clipboard (the webview's own clipboard API is often
+  /// blocked or asks for permission inside desktop apps).
+  async readClipboard() {
+    if (isTauri) {
+      try {
+        const { readText } = await import('@tauri-apps/plugin-clipboard-manager')
+        return (await readText()) || ''
+      } catch { /* fall back below */ }
+    }
+    return navigator.clipboard.readText()
+  },
   async openFolder(dir) {
     if (!isTauri || !dir) return
     const { openPath } = await import('@tauri-apps/plugin-opener')
@@ -184,20 +195,24 @@ export const api = {
   /// Open a downloaded file; if it is missing, open its folder instead.
   /// Returns false when the file itself could not be found.
   async openOrFolder(path, dir) {
-    if (path && (await api.pathExists(path))) {
-      await api.openFile(path)
-      return true
-    }
-    if (dir) await api.openFolder(dir)
+    try {
+      if (path && (await api.pathExists(path))) {
+        await api.openFile(path)
+        return true
+      }
+      if (dir) await api.openFolder(dir)
+    } catch { /* opening is not supported here (e.g. some mobile builds) */ }
     return false
   },
   /// Highlight the file in the file manager; if it is missing, open its folder.
   async revealOrFolder(path, dir) {
-    if (path && (await api.pathExists(path))) {
-      await api.showInFolder(path)
-      return true
-    }
-    if (dir) await api.openFolder(dir)
+    try {
+      if (path && (await api.pathExists(path))) {
+        await api.showInFolder(path)
+        return true
+      }
+      if (dir) await api.openFolder(dir)
+    } catch { /* not supported here */ }
     return false
   },
   async openUrl(url) {

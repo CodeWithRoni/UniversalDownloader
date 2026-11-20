@@ -32,6 +32,12 @@ const ACTIVE = new Set(['starting', 'downloading', 'processing'])
 const FINISHED = new Set(['done', 'error', 'cancelled'])
 const HISTORY_MAX = 1000
 
+/// yt-dlp --limit-rate accepts e.g. 500K, 2M, 1.5M (bytes per second).
+export function validRate(v) {
+  const s = String(v || '').trim()
+  return /^\d+(\.\d+)?[KMG]?$/i.test(s) ? s.toUpperCase() : ''
+}
+
 export function AppProvider({ children }) {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [ready, setReady] = useState(false)
@@ -231,7 +237,7 @@ export function AppProvider({ children }) {
       splitChapters: !!item.splitChapters,
       liveFromStart: !!item.liveFromStart,
       concurrentFragments: s.concurrentFragments || null,
-      limitRate: s.limitRate || null,
+      limitRate: validRate(s.limitRate) || null,
       useArchive: !!s.useArchive,
       nameTemplate: s.nameTemplate,
       playlistIndex: item.playlistIndex ?? null,

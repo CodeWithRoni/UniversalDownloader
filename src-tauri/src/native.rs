@@ -206,6 +206,7 @@ fn choose(formats: &[VideoFormat], p: &DownloadParams) -> Option<VideoFormat> {
 pub async fn start_download(
     app: AppHandle,
     jobs: Arc<Mutex<HashMap<String, Arc<JobCtl>>>>,
+    ctl: Arc<JobCtl>,
     p: DownloadParams,
 ) -> Result<(), String> {
     let video = Video::new(p.url.trim()).map_err(map_err)?;
@@ -231,8 +232,12 @@ pub async fn start_download(
     let total = format.content_length.as_deref().and_then(|x| x.parse::<u64>().ok());
 
     let id = p.id.clone();
-    let ctl = Arc::new(JobCtl::default());
-    jobs.lock().unwrap().insert(id.clone(), ctl.clone());
+    if let Some(reason) = ctl.stop_reason() {
+        // Paused/cancelled while the video info was being fetched.
+        jobs.lock().unwrap().remove(&id);
+        let _ = app.emit(PROGRESS_EVENT, Progress { id, status: reason.into(), ..Default::default() });
+        return Ok(());
+    }
 
     tauri::async_runtime::spawn(async move {
         let emit = |pr: Progress| {

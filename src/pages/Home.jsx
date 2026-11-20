@@ -70,7 +70,7 @@ export default function Home() {
 
   async function paste() {
     try {
-      const clip = (await navigator.clipboard.readText()).trim()
+      const clip = (await api.readClipboard()).trim()
       if (!clip) return
       setText(clip)
       if (looksLikeUrl(clip)) {

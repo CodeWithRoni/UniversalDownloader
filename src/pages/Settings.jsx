@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { CheckCircle2, FolderOpen, Github, Moon, Monitor, RefreshCw, Sun, XCircle } from 'lucide-react'
 import { api } from '../lib/api'
-import { useApp } from '../lib/store'
+import { useApp, validRate } from '../lib/store'
 import { Button, Field, Input, Section, Segmented, Select, Toggle, cx } from '../components/ui'
 
 function FolderField({ label, value, onPick }) {
@@ -143,7 +143,12 @@ export default function Settings() {
       {!native && (
         <Section title={t('s_advanced')}>
           <Field label={t('speed_limit')} hint={t('speed_limit_hint')}>
-            <Input className="w-full" value={s.limitRate} placeholder="2M" onChange={(e) => save({ limitRate: e.target.value })} />
+            <Input
+              className={`w-full ${s.limitRate && !validRate(s.limitRate) ? 'ring-2 ring-danger/60' : ''}`}
+              value={s.limitRate}
+              placeholder="2M"
+              onChange={(e) => save({ limitRate: e.target.value })}
+            />
           </Field>
           <Field label={t('fragments')}>
             <Select
@@ -209,7 +214,7 @@ export default function Settings() {
               {t('version')} {engine?.appVersion || '2.0.0'} · Rust + Tauri
             </div>
           </div>
-          <Button size="sm" icon={Github} onClick={() => api.openUrl('https://github.com/CodeWithRoni/UniversalDownloader')}>
+          <Button size="sm" icon={Github} onClick={() => api.openUrl('https://github.com/CodeWithRoni/UniversalDownloader').catch(() => {})}>
             {t('github')}
           </Button>
         </div>
